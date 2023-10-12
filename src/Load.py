@@ -1,5 +1,6 @@
 import sys
 import os
+import pandas as pd
 
 def load():
     input_file = '/Users/agos/Documents/Echo-Chambers/MyProject/Datasets/brexit_stances.tsv'
