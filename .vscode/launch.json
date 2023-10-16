@@ -1,0 +1,16 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+
+      {
+        "name": "Python: Your Script",
+        "type": "python",
+        "request": "launch",
+        "program": "/Users/agos/Documents/Echo-Chambers/MyProject/src/main.py",
+        "args": ["brexit_stances.tsv", "--type", "kmeans"],
+        "cwd": "/Users/agos/Documents/Echo-Chambers/MyProject/Datasets/",  // Add this line
+        "console": "integratedTerminal"
+      }
+    ]
+  }
+  

@@ -1,2 +1,3 @@
-ekphrasis==0.5.4
-pandas==1.1.4
+Soon some libraries...
+
+
