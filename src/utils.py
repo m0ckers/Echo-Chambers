@@ -19,19 +19,19 @@ import matplotlib.pyplot as plt
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
+import logging
 #The stances
 #1 = Leave = Positive
 #-1 = 2 = Remain = Negative
 global column_text
 global column_stance
 global delimiter
-def load(type):
-    curr_dir = pathlib.Path.cwd()
-    data_dir = curr_dir.parent / 'Datasets' / type
-    data_dir
+# Set the log level to ERROR
+logging.basicConfig(level=logging.ERROR)
+import warnings
 
 #Splitting tweets for every user
-def split_dataframe(df, column_name, delimiter):
+def split_dataframe(df, column_name, delimiter = None):
     new_rows = []
 
     for _, row in df.iterrows():
@@ -47,7 +47,7 @@ def split_dataframe(df, column_name, delimiter):
 
     return split_df
 
-def preprocess(df, column_text, column_stance, delimiter):
+def preprocess(df, column_text, column_stance, delimiter = None):
     #Library to handle tweets
     def text_processor():
         text_processor = TextPreProcessor(
@@ -148,6 +148,12 @@ def split_train_test(df):
     return(train_text, train_labels)
 #Calculate sentiment for each user
 def sentiment_roberta(df_stance, df_edge):
+    def fxn():
+        warnings.warn("deprecated", DeprecationWarning)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        fxn()
     users = df_stance.columns[0]
     tweets = df_stance.columns[1]
     labels = df_stance.columns[3]
@@ -242,13 +248,23 @@ def sentiment_roberta(df_stance, df_edge):
 def stance_bert():
     ...
 #Build graph
-def build_graph(df):
+def build_graph(df1,df_stance):
+    print('Build Graph...')
+    def add_stance(df_stance):
+        for node in graph.nodes():
+            if node in df_stance['user'].values:
+                graph.nodes[node]['stance'] = df_stance[df_stance['user'] == node]['labels'].iloc[0]
+            else:
+                graph.nodes[node]['stance'] = 0
     # Add edges with weights to the graph
-    graph = nx.from_pandas_edgelist(df, 'source', 'target', 'weight')
+    graph = nx.from_pandas_edgelist(df1, 'source', 'target', 'weight')
     graph = graph.to_undirected()
     link_adj = nx.to_numpy_array(graph)
     edge_list = np.array(list(map(lambda x: list(x), list(graph.edges()))))
+    add_stance(df_stance)
     # Print the list of edges with weights
+    filtered_edges = {key: value for key, value in nx.get_edge_attributes(graph, 'weight').items() if value != 1}
+    filtered_nodes = {key: value for key, value in nx.get_node_attributes(graph, 'stance').items() if value != 0}
     print(graph)
     print(f"Graph is weighted : {nx.is_weighted(graph)}")
     return(graph, link_adj, edge_list)
@@ -270,37 +286,35 @@ def networkx_to_metis(graph):
 
     return metis_data
 
-def community_purity(df_stance, communities):
-  purity_scores = []
-  j = 0
-  for community in communities:
-      # Create a Counter object to count label frequencies within the community
-      label_counts = Counter()
-      i = 0
-      j += 1
-      # Iterate through nodes in the community
-      for node in community:
-          # Check if the node is present in the labels_df DataFrame
-          if node in df_stance['user'].values:
-              # Get the label of the current node from the DataFrame
-              i += 1
-              node_label = df_stance.loc[df_stance['user'] == node, 'stance'].values[0]
-              # Update the label counts
-              label_counts[node_label] += 1
-      # Calculate the purity of the community
-      if not label_counts:
-          purity_scores.append(0.0)  # Avoid division by zero
-      else:
-          # Find the most frequent label within the community
-          max_label_count = max(label_counts.values())
-          # Calculate the purity using the formula
-          purity = max_label_count / i
-          purity_scores.append(purity)
-          print(f"Purity distribution for community {j}:{label_counts}")
-
-  for i, purity in enumerate(purity_scores):
-    print(f"Community {i + 1}: {purity:.2f}")
-  return purity_scores
+def community_purity(graph, communities):
+    purity_scores = []
+    j = 0
+    for community in communities:
+        label_counts = Counter()
+        i = 0
+        j += 1
+        # Iterate through nodes in the community
+        for node in community:
+            # Check if the node is present in the labels_df DataFrame
+            if node in graph.nodes and graph.nodes[node]['stance'] != 0:
+                # Get the label of the current node from the DataFrame
+                i += 1
+                node_label = graph.nodes[node]['stance']
+                # Update the label counts
+                label_counts[node_label] += 1
+        # Calculate the purity of the community
+        if not label_counts:
+            purity_scores.append(0.0)  # Avoid division by zero
+        else:
+            # Find the most frequent label within the community
+            max_label_count = max(label_counts.values())
+            # Calculate the purity using the formula
+            purity = max_label_count / i
+            purity_scores.append(purity)
+            print(f"Purity distribution for community {j}:{label_counts}")
+    for i, purity in enumerate(purity_scores):
+        print(f"Community {i + 1}: {purity:.2f}")
+    return purity_scores
 
 def node2vec(graph):
     def visualize():
@@ -330,13 +344,13 @@ def node2vec(graph):
     node_embeddings = model.wv
     visualize()
 
-def louvain(graph, df, resolution):
-    communities = list(nx.community.louvain_communities(graph, weight = 'weight', resolution=0.5))
-    print(f'Modularity:{nx.community.modularity(graph, communities, weight="weight",resolution=1)}')
+def louvain(graph, resolution = 0.6):
+    communities = list(nx.community.louvain_communities(graph, weight = 'weight', resolution=resolution))
+    print(f'Modularity:{nx.community.modularity(graph, communities, weight="weight", resolution=resolution)}')
     print('Conductance____')
     calculate_conductance(graph, communities)
     print('Purity____')
-    community_purity(df, communities)
+    community_purity(graph, communities)
 
 def feature_vector(node_embeddings):
     from gensim.models import KeyedVectors
