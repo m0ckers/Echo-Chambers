@@ -2,7 +2,7 @@ import re
 import pandas as pd
 import nltk
 from nltk.corpus import stopwords
-from nltk.tokenize import word_tokenize
+from nltk.tokenize import word_tokenize 
 from collections import Counter
 from ekphrasis.classes.preprocessor import TextPreProcessor
 from ekphrasis.classes.tokenizer import SocialTokenizer
@@ -13,13 +13,12 @@ import os
 import pathlib
 from node2vec import Node2Vec
 import numpy as np
+import ev_metrics
 import torch
 import seaborn as sns
 import matplotlib.pyplot as plt
-from sklearn.cluster import KMeans
-from sklearn.decomposition import PCA
-from sklearn.manifold import TSNE
 import logging
+
 #The stances
 #1 = Leave = Positive
 #-1 = 2 = Remain = Negative
@@ -31,12 +30,86 @@ logging.basicConfig(level=logging.ERROR)
 import warnings
 # Filter out FutureWarnings
 warnings.filterwarnings("ignore", category=FutureWarning)
+
 def fxn():
     warnings.warn("deprecated", DeprecationWarning)
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     fxn()
+#Import datasets
+def ds():
+    #Import VaxNoVax
+    input_file = '/Users/agos/Documents/Echo-Chambers/MyProject/Datasets/Vaxnovax_edges.txt'
+    df_edge_vax = pd.read_csv(input_file, sep= ' ', header=None, usecols= [0,1])
+    #Import brexit edges
+    input_file = '/Users/agos/Documents/Echo-Chambers/MyProject/Datasets/Brexit_edges.csv'
+    df_edge_brexit = pd.read_csv(input_file, sep= ',', header=None, usecols= [0,1,3])
+    #Import brexit stances
+    input_file = '/Users/agos/Documents/Echo-Chambers/MyProject/Datasets/brexit_stances.tsv'
+    df_stance_brexit = pd.read_csv(input_file, sep='\t', header=0, usecols=['tweets', 'stance','user'])
+    #Import vaccination2
+    input_file = '/Users/agos/Documents/Echo-Chambers/MyProject/Datasets/data_vaccination_sentiment.csv'
+    df_vax2 = pd.read_csv(input_file, sep= ',')
+    df_vax2['new_weights'] = df_vax2['new_weights'].astype(float)
+    # Covid-19
+    csv_file_path = "/Users/agos/Documents/Echo-Chambers/MyProject/Datasets/Final_data.csv"
+    df_covid = pd.read_csv(csv_file_path, usecols = ['username', 'favorites', 'retweets', '@mentions', 'geo', 'text_con_hashtag'])
+    pd.set_option('display.max_colwidth', 100)
+    graph_covid = nx.read_gml("/Users/agos/Documents/Echo-Chambers/MyProject/Datasets/Final_Graph_Covid.gml")
+    #NET SOTA
+    input_file = '/Users/agos/Documents/Echo-Chambers/MyProject/Datasets/retweet_graph_nepal_threshold_largest_CC.txt'
+    df_net = pd.read_csv(input_file, header=None)
+    return(df_edge_brexit, df_stance_brexit, df_edge_vax, df_vax2, graph_covid, df_net)
+
+#Build graphs
+def graphs():
+    #Brexit no weight
+    datasets = ds()
+    graph = nx.from_pandas_edgelist(datasets[0], 0, 1)
+    graph1 = graph.to_undirected()
+    graph1.name = 'Brexit no weight'
+    # Print the list of edges with weights
+
+    print(graph)
+    print(f"Graph is weighted : {nx.is_weighted(graph)}")
+
+    #Brexit
+    df = preprocess(datasets[1], 'tweets', 'stance', "|")
+    df1 = sentiment_roberta(df, datasets[0])
+    from utils import build_graph 
+    graph2, link_adj, edg_adj = build_graph(df1, df)
+    graph2 = graph.to_undirected()
+    graph2.name = 'Brexit weight'
+
+    #VaxnoVax
+    graph = nx.from_pandas_edgelist(datasets[2], 0, 1)
+    graph3 = graph.to_undirected()
+    graph3.name = 'VaxnoVax'
+
+    # Vax2
+    graph = nx.from_pandas_edgelist(datasets[3], 'source', 'target', edge_attr='new_weights')
+    graph4 = graph.to_undirected()
+    graph4.name = 'Vaccination Kaggle'
+
+    #Covid 
+    graph = datasets[4]
+    graph5 = nx.convert_node_labels_to_integers(graph)
+    df_net = datasets[5].rename(columns={2: "edge_weight_attr"})
+    graph5.name = 'Covid'
+
+    #Nethanyau
+    graph = nx.from_pandas_edgelist(df_net, 0, 1, "edge_weight_attr")
+    graph = nx.convert_node_labels_to_integers(graph)
+    graph6 = graph.to_undirected()
+    graph6.name = 'Nethanyau Soa'
+
+    #graph_list = [globals()[f'graph{i}'] for i in range(1, 6)]
+    return(graph1, graph2 , graph3 , graph4 , graph5 , graph6)
+
+def emb():
+    input_file = '/Users/agos/Documents/Echo-Chambers/MyProject/Datasets/Embeddings/embeddings_weight_brexit.model'
+
 #Splitting tweets for every user
 def split_dataframe(df, column_name, delimiter = None):
     new_rows = []
@@ -101,63 +174,6 @@ def preprocess(df, column_text, column_stance, delimiter = None):
     df = df.reset_index(drop=True)
     return df
 
-def preprocess_vaccination(df):
-    import json
-    #Extract edges between nodes
-    origine = []
-    dest = []
-    tweet = []
-    for item in range(len(df['reply_to'])):
-        data_str = df['reply_to'].iloc[item]
-        data_str = data_str.replace("'", '"')
-        data_list = json.loads(data_str)
-        user_ids = [entry['user_id'] for entry in data_list]
-        i=0
-        for elem in range(len(user_ids)-1):
-            origine.append(user_ids[i])
-            dest.append(user_ids[elem+1])
-    #Creat elist of weighted edges
-    source  = []
-    target = []
-    weight = []
-    tweet = []
-    column_tuples = [(val1, val2) for val1, val2 in zip(origine, dest)]
-
-    from collections import Counter
-    tuple_counter = Counter(column_tuples)
-    for tuple_value, count in tuple_counter.items():
-        source.append(int(tuple_value[0]))
-        target.append(int(tuple_value[1]))
-        weight.append(count)
-        tweet.append(df[df['user_id'] == (int(tuple_value[0]))]['tweet'].iloc[0])
-    df1 = pd.DataFrame(data = np.column_stack([source,target,weight,tweet]), 
-                       columns= ['source','target','weight','tweet'])
-    #Assign new nodes numbers
-    # Extract unique nodes from both columns
-    unique_nodes = pd.concat([df1['source'], df1['target']]).unique()
-    # Create a mapping from old node IDs to new node IDs
-    node_mapping = {old_node: new_node for new_node, old_node in enumerate(unique_nodes)}
-    # Apply the mapping to the 'Source' and 'Target' columns
-    df1['source'] = df1['source'].map(node_mapping)
-    df1['target'] = df1['target'].map(node_mapping)
-    print(f'New dataframe with shape:{df1.shape}')
-    sns.histplot(data=df1, y="weight", bins=50, kde=True)
-    #sns.histplot(df1[df1['weight'] != 1], y="weight", bins=50, kde=True)
-    return(df1)
-
-def split_train_test(df):
-    # On pre-processed tweets
-    from sklearn.model_selection import train_test_split
-    labels = df['Stance']
-    train_text, test_text, train_labels, test_labels = train_test_split(df['Preprocessed'], df['stance'], random_state=2018,
-                                                                        test_size=0.2,
-                                                                        stratify=labels)
-    train_labels = train_labels.tolist()
-    test_labels = test_labels.tolist()
-    # Get the lists of sentences and their labels.
-    print(len(train_labels), len(train_text))
-    return(train_text, train_labels)
-#Calculate sentiment for each user
 def sentiment_roberta(df_stance, df_edge = None):
     users = df_stance.columns[0]
     tweets = df_stance.columns[1]
@@ -190,6 +206,7 @@ def sentiment_roberta(df_stance, df_edge = None):
     sentiments = []
     # Iterate over users to get sentiment
     print('Calculate sentiment for each user...')
+
     for user in unique_users:
         user_df = df_stance[df_stance[users] == user]
         sentiment = 0
@@ -212,6 +229,7 @@ def sentiment_roberta(df_stance, df_edge = None):
     print('Done!')
     #Put weights on node pairs
     print('Creating weights')
+
     if df_edge is not None:
         edge_weights = {}
         # Iterate through the DataFrame rows and update edge weights
@@ -223,7 +241,9 @@ def sentiment_roberta(df_stance, df_edge = None):
                 edge_weights[(source, target)] += 1
             else:
                 edge_weights[(source, target)] = 1
+
         #Add weights based on the stance
+
         for key, value in edge_weights.items():
             if key[0] in df[users].values or key[1] in df[users].values:
                 #Both nodes have text
@@ -244,142 +264,85 @@ def sentiment_roberta(df_stance, df_edge = None):
         edges_with_weights = [(source, target, weight) for (source, target), weight in edge_weights.items()]
         df1 = pd.DataFrame(edges_with_weights, columns = ['source', 'target', 'weight'])
         print('Done!')
-    else:
 
+    else:
         print('Some Viz!')
         sns.histplot(data=df1, y="weight", bins=50)
         print()
         sns.histplot(data=df1[df1['weight']!= 1], y="weight", bins=50)
+
     return(df1)
 
+def preprocess_sentiment(text):
+    new_text = []
+    for t in text.split(" "):
+        t = '@user' if t.startswith('@') and len(t) > 1 else t
+        t = 'http' if t.startswith('http') else t
+        new_text.append(t)
+    return " ".join(new_text)
+
 def sentiment_roberta_vaccination(df1):
-    from transformers import pipeline, AutoTokenizer, AutoModelForSequenceClassification
-    from tqdm import tqdm
     # Prepare model
     MODEL = "cardiffnlp/twitter-roberta-base-sentiment-latest"
     tokenizer = AutoTokenizer.from_pretrained(MODEL)
     model = AutoModelForSequenceClassification.from_pretrained(MODEL)
+    if torch.cuda.is_available():
+        model = model.to('cuda')
+
     sentiment_pipeline = pipeline("sentiment-analysis", model=model, tokenizer=tokenizer)
 
-    def preprocess_sentiment(text):
-        new_text = []
-        for t in text.split(" "):
-            t = '@user' if t.startswith('@') and len(t) > 1 else t
-            t = 'http' if t.startswith('http') else t
-            new_text.append(t)
-        return " ".join(new_text)
     # Calculate sentiment for each user
+    from tqdm import tqdm
     print('Calculate sentiment for each user...')
     sentiments = []
     sentiment = 0  # Initialize sentiment score
     prev_tweet = None  # Initialize previous tweet as None
-    batch_tweets = []  # Initialize batch of tweets
 
     for _, row in tqdm(df1.iterrows(), total=len(df1)):
-        tweet = row['tweet']
+        tweet = row['Preprocessed']
 
         if tweet != prev_tweet:
-            preprocessed_tweet = preprocess_sentiment(tweet)
-            batch_tweets.append(preprocessed_tweet)
+          sentiment = 0
+          prev_tweet = tweet  # Update previous tweet
+          result = sentiment_pipeline(tweet)
+          if result[0]['label'] == 'positive':
+            sentiment += result[0]['score']
+          elif result[0]['label'] == 'negative':
+            sentiment -= result[0]['score']
+          else:
+            sentiment = 0
 
-        prev_tweet = tweet  # Update previous tweet
-
-        # Analyze sentiment in batches
-        if len(batch_tweets) >= 32:  # Adjust batch size as needed
-            results = sentiment_pipeline(batch_tweets)
-            for result in results:
-                if result['label'] == 'positive':
-                    sentiment += result['score']
-                elif result['label'] == 'negative':
-                    sentiment -= result['score']
-            sentiments.extend([sentiment] * len(batch_tweets))
-            batch_tweets = []
-
-    # Handle any remaining tweets in the batch
-    if batch_tweets:
-        results = sentiment_pipeline(batch_tweets)
-        for result in results:
-            if result['label'] == 'positive':
-                sentiment += result['score']
-            elif result['label'] == 'negative':
-                sentiment -= result['score']
-        sentiments.extend([sentiment] * len(batch_tweets))
-    
-    weight = list(df1['weight']) + sentiments
-    data = {'source': df1['source'], 'target': df1['target'], 'tweet': df1['tweet'], 'weight': weight}
-    df = pd.DataFrame(data)
-def stance_bert():
-    ...
-#Build graph
-def build_graph(df1, df_stance = None):
-    print('Build Graph...')
-    def add_stance(df_stance):
-        for node in graph.nodes():
-            if node in df_stance['user'].values:
-                graph.nodes[node]['stance'] = df_stance[df_stance['user'] == node]['labels'].iloc[0]
-            else:
-                graph.nodes[node]['stance'] = 0
-    # Add edges with weights to the graph
-    graph = nx.from_pandas_edgelist(df1, 'source', 'target', 'weight')
-    graph = graph.to_undirected()
-    link_adj = nx.to_numpy_array(graph)
-    edge_list = np.array(list(map(lambda x: list(x), list(graph.edges()))))
-    if df_stance is not None:
-        print('Here you can add stances')
-        add_stance(df_stance)
-    # Print the list of edges with weights
-    filtered_edges = {key: value for key, value in nx.get_edge_attributes(graph, 'weight').items() if value != 1}
-    filtered_nodes = {key: value for key, value in nx.get_node_attributes(graph, 'stance').items() if value != 0}
-    print(graph)
-    print(f"Graph is weighted : {nx.is_weighted(graph)}")
-    return(graph, link_adj, edge_list)
-
-def calculate_conductance(graph, communities):
-  conductance = 0
-  for i, community in enumerate(communities):
-      conductance_i = nx.algorithms.conductance(graph, community)
-      conductance += conductance_i
-      print(f"Community {i + 1} Conductance: {conductance_i}")
-
-  print(f"Total Conductance: {conductance}")
-
-def networkx_to_metis(graph):
-    metis_data = []
-    for node in graph.nodes():
-        neighbors = list(graph.neighbors(node))
-        metis_data.append(neighbors)
-
-    return metis_data
-
-def community_purity(graph, communities):
-    purity_scores = []
-    j = 0
-    for community in communities:
-        label_counts = Counter()
-        i = 0
-        j += 1
-        # Iterate through nodes in the community
-        for node in community:
-            # Check if the node is present in the labels_df DataFrame
-            if node in graph.nodes and graph.nodes[node]['stance'] != 0:
-                # Get the label of the current node from the DataFrame
-                i += 1
-                node_label = graph.nodes[node]['stance']
-                # Update the label counts
-                label_counts[node_label] += 1
-        # Calculate the purity of the community
-        if not label_counts:
-            purity_scores.append(0.0)  # Avoid division by zero
+          sentiments.append(sentiment)
         else:
-            # Find the most frequent label within the community
-            max_label_count = max(label_counts.values())
-            # Calculate the purity using the formula
-            purity = max_label_count / i
-            purity_scores.append(purity)
-            print(f"Purity distribution for community {j}:{label_counts}")
-    for i, purity in enumerate(purity_scores):
-        print(f"Community {i + 1}: {purity:.2f}")
-    return purity_scores
+            sentiments.append(sentiment)
+
+        df1['sentiments'] = sentiments
+        df1 = df1.groupby(['source', 'target'])[['weight', 'sentiments']].sum()
+        df1.reset_index(inplace=True)
+        from sklearn.preprocessing import MinMaxScaler
+
+        scaler = MinMaxScaler()
+
+        df1['sentiments'] = scaler.fit_transform(df1[['sentiments']])
+
+        first = [float(x) for x in df1['weight'].tolist()]
+        second = [float(y) for y in df1['sentiments'].tolist()]
+        sum_result = [x * y if y != 0 else x + y for x, y in zip(first, second)]
+
+        df1['new_weights'] = sum_result
+        df1['unordered_pair'] = df1.apply(lambda row: tuple(sorted([row['source'], row['target']])), axis=1)
+
+        # Group by the unordered pair column and sum the other columns
+        grouped = df1.groupby('unordered_pair').agg({
+            'source': 'first',  # Just keep one of the source values (or use 'first' or 'last' as per your need)
+            'target': 'first',   # Just keep one of the target values (or use 'first' or 'last' as per your need)
+            'new_weights': 'sum'  # Sum the 'value' column
+        }).reset_index()
+
+        # Drop the 'unordered_pair' column if not needed
+        grouped = grouped.drop(columns='unordered_pair')
+        df1 = grouped
+        df1.head()
 
 def node2vec(graph):
     def visualize():
@@ -409,171 +372,134 @@ def node2vec(graph):
     node_embeddings = model.wv
     visualize()
 
-def louvain(graph, resolution = 0.6):
-    communities = list(nx.community.louvain_communities(graph, weight = 'weight', resolution=resolution))
-    community_measures(graph, communities)
+def networkx_to_metis(graph):
+    metis_data = []
+    for node in graph.nodes():
+        neighbors = list(graph.neighbors(node))
+        metis_data.append(neighbors)
 
-def metis(graph):
-    import metis
-    metis_graph = networkx_to_metis(graph)
-    # Perform graph partitioning using METI
-    (edgecuts, parts) = metis.part_graph(metis_graph, nparts=2, recursive=True) 
-    # Print the results
-    print("Edge Cuts:", edgecuts)
-    print("Partition Assignment:", parts)
+    return metis_data
 
-    # Create subgraphs based on the partition assignment
-    partitions = {}
-    for node, part_id in enumerate(parts):
-        if part_id not in partitions:
-            partitions[part_id] = nx.Graph()
-        partitions[part_id].add_node(node)
-        partitions[part_id].add_edges_from(graph.edges(node))
+def filter_graph(graph, threshold = 2):
+  G = graph.copy()
 
-    # Print the subgraphs
-    for part_id, subgraph in partitions.items():
-        print(f"Partition {part_id}: Nodes {subgraph.nodes()}")
-    partition = parts
+  average_degree = sum(dict(G.degree()).values()) / len(G)
 
-    # Initialize a dictionary to store communities
-    communities_dict = {}
-    # Iterate through the partition assignment list
-    for i, community_id in enumerate(partition):
-        if community_id not in communities_dict:
-            communities_dict[community_id] = set()
-        communities_dict[community_id].add(i)  # Add node index to the corresponding community
+  # Filter edges with weights greater than or equal to the threshold
+  filtered_edges = [(u, v, data) for u, v, data in G.edges(data=True) if 
+  G.degree(u) > average_degree * threshold or G.degree(v) > average_degree * threshold]
 
-    # Convert the dictionary values to a list of sets
-    communities = list(communities_dict.values())
-    community_measures(graph, communities)
+  # Create a subgraph containing only the filtered edges
+  filtered_G = nx.Graph()
+  filtered_G.add_edges_from(filtered_edges)
 
-def community_measures(graph, communities):
-    print(f'Modularity:{nx.community.modularity(graph, communities, weight="weight")}')
-    print('Conductance____')
-    calculate_conductance(graph, communities)
-    print('Purity____')
-    community_purity(graph, communities)
+  # If you want to add the same node attributes or other data, copy them from the original graph if needed
+  filtered_G.add_nodes_from((n, G.nodes[n]) for n in filtered_G.nodes)
+  H = filtered_G
 
-def feature_vector(node_embeddings):
-    from gensim.models import KeyedVectors
-    # Initialize an empty list to store the feature vectors
-    feature_vectors = []
-    # Iterate through the keys (nodes) in the KeyedVectors object
-    for node in node_embeddings.index_to_key:
-        vector = node_embeddings[node]  # Access the vector for the current node
-        feature_vectors.append(vector)  # Append the vector to the list
-    return(feature_vectors)
+  components = nx.connected_components(H)
+  largest_component = max(components, key=len)
+  H = G.subgraph(largest_component)
+  H.number_of_nodes(), H.number_of_edges()
 
-def cluster_measures(feature_vectors, cluster_labels):
-    from sklearn.metrics import silhouette_score
-    from sklearn.metrics import calinski_harabasz_score
-    from sklearn.metrics import davies_bouldin_score
-    silhouette_avg = silhouette_score(feature_vectors, cluster_labels)
-    print(f"Silhouette Score: {silhouette_avg}")
-    # Calculate the Calinski-Harabasz Index
-    ch_score = calinski_harabasz_score(feature_vectors, cluster_labels)
-    print(f"Calinski-Harabasz Index: {ch_score}")
-    # Calculate the Davies-Bouldin Index
-    db_score = davies_bouldin_score(feature_vectors, cluster_labels)
-    print(f"Davies-Bouldin Index: {db_score}")
+  mapping = {node: idx for idx, node in enumerate(H.nodes())}
 
-#def clustering(feature_vectors, num_clusters, type=None):
-    import matplotlib.pyplot as plt
-    import seaborn as sns
-    from sklearn.cluster import KMeans, SpectralClustering
-    from sklearn.decomposition import PCA
-    from sklearn.manifold import TSNE
-    from sklearn.metrics.pairwise import cosine_similarity
-    if type == 'kmeans' or type is None:
-        # K-Means clustering
-        kmeans = KMeans(n_clusters=num_clusters, random_state=0)
-        cluster_labels = kmeans.fit_predict(feature_vectors)
+  # Rename nodes to integer labels
+  H = nx.relabel_nodes(H, mapping)
 
-    elif type == 'spectralclustering':
-        # Spectral Clustering
-        print('Spectral clustering...')
-        cosine_similarity_matrix = cosine_similarity(feature_vectors)
-        sc = SpectralClustering(2, affinity='precomputed', n_init=100, assign_labels='discretize')
-        cluster_labels = sc.fit_predict(cosine_similarity_matrix)
+  # Print transformed nodes
+  print("Transformed nodes:", list(H.nodes()))
 
-    elif type == 'agglomerative':
-        # Agglomerative Clustering
-        print('Agglomerative clustering...')
-        from sklearn.cluster import AgglomerativeClustering
-        clustering = AgglomerativeClustering(n_clusters=num_clusters).fit(feature_vectors)
-        cluster_labels = clustering.labels_
+  for u, v, data in H.edges(data=True):
+      data[2] = float(round(data[2]))  # Convert weight to integer
+
+  # Print transformed edge weights
+  print("Transformed edge weights:", nx.get_edge_attributes(H, 'new_weights'))
+  print(H.number_of_nodes(), H.number_of_edges())
+
+  return H
+
+def average_degree(graph):
+  average_degree = sum(dict(graph.degree()).values()) / len(graph)
+  return average_degree
+
+def df_info_function(cluster_sizes, measures_result, community_result, method):
+    # Initialize an empty DataFrame with column names
+    df_info = pd.DataFrame(columns= ["Method"] + ["Community " + str(i) for i in range(2)] + ["Modularity", "Silhouette", "Calinski-Harabasz Index",
+                                                                                "David-Bouldain Index","Conductance"])
+    # Prepare data for appending
+    data_to_append = {
+        "Method": method,
+        **{f"Community {i}": cluster_sizes.get(i, 0) for i in range(2)},  # Dynamically handle community sizes
+        "Modularity": round(community_result[0], ndigits=2) if community_result else None,
+        "Silhouette": round(measures_result[0], ndigits=2) if measures_result else None,
+        "Calinski-Harabasz Index": round(measures_result[1], ndigits=2) if measures_result else None,
+        "David-Bouldain Index": round(measures_result[2], ndigits=2) if measures_result else None,
+        "Conductance": community_result[1] if community_result and len(community_result) > 1 else None
+        }
+
+    # Append to the DataFrame
+    df_info = pd.concat([df_info, pd.DataFrame([data_to_append])], ignore_index=True)
+
+    return df_info
+
+def load_embeddings(path):
+    from gensim.models import Word2Vec
+    return np.load(path)
+
+def load_dataframe(file_path, sep=',', dtype=None):
+    file_type = os.path.splitext(file_path)[1].lower()
+
+    if file_type in ['.csv']:
+        # Load the file into a DataFrame
+        df = pd.read_csv(file_path, sep=',', header = None, dtype=dtype)
+        df = df.rename(columns={df.columns[0]: 0, df.columns[1]: 1,df.columns[2]: 2})
+    elif file_type in ['.tsv']:
+        df = pd.read_csv(file_path, sep=' ', header = None, dtype=dtype)
+        df = df.rename(columns={df.columns[0]: 0, df.columns[1]: 1,df.columns[2]: 2})
+    elif file_type in ['.txt']:
+        df = pd.read_csv(file_path, sep=' ', header = None, dtype=dtype)
+        df = df.rename(columns={df.columns[0]: 0, df.columns[1]: 1,df.columns[2]: 2})
+
+    elif file_type == 'gml':
+        # Load a graph from a GML file
+        graph = nx.read_gml(file_path)
+        return graph
 
     else:
-        print(f"Clustering type '{type}' is not supported.")
-        return
+        raise ValueError(f"Unsupported file type '{file_type}'. Use 'csv', 'tsv', 'txt', or 'gml'.")
+    return df
+    
+def build_graph(df, edge_columns=(0, 1), df_stance=None, name=None):
+    # Ensure the dataframe has the expected columns for edges
+    if df.shape[1] < 2:
+        raise ValueError("DataFrame must have at least two columns for edges.")
+    
+    # Create a graph from the DataFrame
+    graph = nx.from_pandas_edgelist(df, source=0, target=1)
+    graph = graph.to_undirected()
 
-    # Apply t-SNE for dimensionality reduction
-    tsne = TSNE(n_components=2, random_state=42)
-    reduced_data = tsne.fit_transform(feature_vectors)
+    # Optional: Set the graph name if provided
+    if name:
+        graph.name = name
+    
+    return graph
 
-    # Create a DataFrame with cluster labels and reduced data
-    df_clusters = pd.DataFrame({'Cluster': cluster_labels, 'Feature_0': reduced_data[:, 0], 'Feature_1': reduced_data[:, 1]})
 
-    # Plot the clusters in the reduced space
-    sns.scatterplot(x='Feature_0', y='Feature_1', hue='Cluster', data=df_clusters, palette='Set1')
-    plt.title(f'Clustering Results ({type} - t-SNE Visualization)')
-    plt.xlabel('Feature 0')
-    plt.ylabel('Feature 1')
-    plt.show()
 
-    print('Some measures...')
-    cluster_measures(feature_vectors, cluster_labels)
 
-def clustering(feature_vectors, num_clusters, type = None):
-    if type == 'kmeans' or type is None:
-    # Create a KMeans clustering model
-        kmeans = KMeans(n_clusters=num_clusters, random_state=0)
-        # Fit the model to your feature vectors
-        cluster_labels = kmeans.fit_predict(feature_vectors)
-        cluster_labels
-        pca = PCA(n_components=2)
-        reduced_data = pca.fit_transform(feature_vectors)
-        # Assuming 'cluster_labels' contains the cluster assignments for each data point
-        plt.figure(figsize=(10, 6))
 
-        for cluster_id in set(cluster_labels):
-            # Filter data points belonging to the current cluster
-            cluster_data = reduced_data[cluster_labels == cluster_id]
-            # Plot data points of the current cluster with a unique color
-            plt.scatter(cluster_data[:, 0], cluster_data[:, 1], label=f'Cluster {cluster_id}', alpha=0.7)
-        #Visualize and measure
-        plt.title('Cluster Visualization')
-        plt.legend()
-        plt.show()
-        print('Some measures...')
-        cluster_measures(feature_vectors, cluster_labels)
-        
-    elif type == 'spectralclustering' or type is None:
-        print('Spectral clustering...')
-        from sklearn.cluster import SpectralClustering
-        from sklearn.metrics.pairwise import cosine_similarity
-        cosine_similarity_matrix = cosine_similarity(feature_vectors)
-        sc = SpectralClustering(2, affinity='precomputed', n_init=100, assign_labels='discretize')
-        # Assuming you have cluster assignments and cosine similarity matrix
-        cluster_labels = sc.fit_predict(cosine_similarity_matrix)
-        # Apply t-SNE for dimensionality reduction
-        tsne = TSNE(n_components=2, random_state=42)
-        reduced_data = tsne.fit_transform(cosine_similarity_matrix)
-        # Create a DataFrame with cluster labels and reduced data
-        df_spectral = pd.DataFrame({'Cluster': cluster_labels, 'Feature_0': reduced_data[:, 0], 'Feature_1': reduced_data[:, 1]})
-        # Plot the clusters in the reduced space
-        sns.scatterplot(x='Feature_0', y='Feature_1', hue='Cluster', data=df_spectral, palette='Set1')
-        plt.title('Spectral Clustering Results (t-SNE Visualization)')
-        plt.xlabel('Feature 0')
-        plt.ylabel('Feature 1')
-        plt.show()
-        print('Some measures...')
-        cluster_measures(cosine_similarity_matrix, cluster_labels)
-        
-    elif type == 'agglomerative' or type is None:
-        print('Hierarchical clustering...')
-        from sklearn.cluster import AgglomerativeClustering
-        clustering = AgglomerativeClustering().fit(feature_vectors)
-        cluster_labels = clustering.labels_
-        print('Some measures...')
-        cluster_measures(feature_vectors, cluster_labels)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
